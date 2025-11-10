@@ -17,6 +17,7 @@ private:
     int numCities;
     std::vector<Point> cities;
     std::vector<std::vector<double>> distance_matrix;
+    std::vector<Point> bestRoute;
 
     int populationSize;
     int maxIterations;
@@ -238,7 +239,7 @@ public:
 
         // 3. ROZWIĄŻ PROBLEM (zgodnie z prośbą, aby konstruktor to robił)
         // W normalnym projekcie ta linia byłaby w publicznej metodzie solve()
-        this->solve(); 
+        bestRoute = this->solve(); 
     }
 
     /**
@@ -248,7 +249,11 @@ public:
     std::vector<Point> solve() {
         for (int t = 0; t < maxIterations; ++t) {
             // 1. Oblicz parametr 'a' (maleje liniowo od 2 do 0)
-            double a = 2.0 - t * (2.0 / maxIterations);
+            double progress = static_cast<double>(t) / maxIterations;
+            double a = 2.0 * std::pow(1.0 - progress, 2.0); // kwadratowe tempo zaniku
+
+            // double a = 2.0 - t * (2.0 / maxIterations);
+
 
             // 2. Zaktualizuj pozycje wszystkich wilków Omega
             for (Wolf& wolf : omega) {
@@ -274,6 +279,7 @@ public:
         for (int city_index : bestRouteIndices) {
             bestRoutePoints.push_back(cities[city_index]);
         }
+        bestRoute = bestRoutePoints; 
         return bestRoutePoints;
     }
 
@@ -285,10 +291,14 @@ public:
         alfa.printRoute(); // Zakładam, że klasa Wolf ma metodę printRoute()
     }
 
+    std::vector<Point> get_best_route() const {
+        return bestRoute;
+    }
+
     /**
      * @brief Zwraca długość najlepszej znalezionej trasy.
      */
-    double get_best_path_length() {
+    double get_best_path_length() const {
         return bestLength;
     }
 };
