@@ -17,7 +17,7 @@ public:
     float dist(const Point& other) const {
         double dx = x - other.x;
         double dy = y - other.y;
-        return std::sqrt(dx * dx + dy * dy);
+        return (dx * dx + dy * dy);
     }
 
     //get
