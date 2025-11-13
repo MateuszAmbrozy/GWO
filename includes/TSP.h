@@ -3,37 +3,43 @@
 #include <iostream>
 #include <cmath>
 #include <vector>
-#include <stdlib.h>
 #include <random>
-#include <time.h>
 #include <algorithm>
 #include <iomanip>
 #include <limits>
+#include <numeric>
+#include <cstddef>
 
-// Zakładam, że te pliki istnieją w Twoim projekcie
-#include "Point.h" 
+#include "Point.h"
 #include "Wolf.h"
 
 class TSP {
 private:
+    static constexpr int MAX_COORD_DIST = 2000;
+    static constexpr double EXPLOIT_BOUND_1 = 0.33;
+    static constexpr double EXPLOIT_BOUND_2 = 0.66;
+
     int numCities;
     std::vector<Point> cities;
-    std::vector<std::vector<double>> distance_matrix;
+    std::vector<double> distance_matrix;
     std::vector<Point> bestRoute;
-
+    std::vector<int> visited;
+    int timestamp;
     int populationSize;
     int maxIterations;
 
-    Wolf alfa;
-    Wolf beta;
-    Wolf delta;
-    std::vector<Wolf> omega;
-
+    Wolf alpha_wolf;
+    Wolf beta_wolf;
+    Wolf delta_wolf;
+    std::vector<Wolf> population;
     double bestLength;
+
+    std::vector<int> tmp_route;
 
     std::mt19937 rand_gen;
     std::uniform_real_distribution<double> unif_dist;
     std::uniform_int_distribution<int> city_dist;
+    std::uniform_int_distribution<int> coord_dist;
 
     void generate_random_cities(int n) {
         if (n <= 0) {
@@ -41,216 +47,203 @@ private:
             return;
         }
         cities.clear();
+        cities.reserve(static_cast<std::size_t>(n));
         for (int i = 0; i < n; i++) {
-            int x = rand_gen() % 100;
-            int y = rand_gen() % 100;
-            this->cities.push_back(Point(x, y));
+            int x = coord_dist(rand_gen);
+            int y = coord_dist(rand_gen);
+            cities.push_back(Point(x, y));
         }
     }
 
     void build_distance_matrix() {
-        distance_matrix.assign(numCities, std::vector<double>(numCities, 0.0));
+        std::size_t total = static_cast<std::size_t>(numCities) * static_cast<std::size_t>(numCities);
+        distance_matrix.assign(total, 0.0);
         for (int i = 0; i < numCities; i++) {
+            std::size_t idx_i = static_cast<std::size_t>(i);
             for (int j = i + 1; j < numCities; j++) {
-                double d = cities[i].dist(cities[j]);
-                distance_matrix[i][j] = d;
-                distance_matrix[j][i] = d;
+                std::size_t idx_j = static_cast<std::size_t>(j);
+                double d_squared = cities[idx_i].dist(cities[idx_j]);
+                distance_matrix[idx_i * static_cast<std::size_t>(numCities) + idx_j] = d_squared;
+                distance_matrix[idx_j * static_cast<std::size_t>(numCities) + idx_i] = d_squared;
             }
         }
     }
 
-    double calculate_route_length(const std::vector<int>& route) {
+    double calculate_route_length(const std::vector<int>& route) const {
         double length = 0.0;
-        for (size_t i = 0; i < numCities - 1; ++i) {
-            length += distance_matrix[route[i]][route[i + 1]];
+        std::size_t n = route.size();
+        std::size_t cities_count = static_cast<std::size_t>(numCities);
+        for (std::size_t i = 0U; i + 1U < n; ++i) {
+            std::size_t idx_from = static_cast<std::size_t>(route[i]);
+            std::size_t idx_to = static_cast<std::size_t>(route[i + 1U]);
+            length += distance_matrix[idx_from * cities_count + idx_to];
         }
-        length += distance_matrix[route[numCities - 1]][route[0]];
+        std::size_t last_idx = static_cast<std::size_t>(route[n - 1U]);
+        std::size_t first_idx = static_cast<std::size_t>(route[0]);
+        length += distance_matrix[last_idx * cities_count + first_idx];
         return length;
     }
 
     void update_wolf_fitness(Wolf& wolf) {
-        double fitness = calculate_route_length(wolf.getRoute());
+        const std::vector<int>& r = wolf.getRoute();
+        double fitness = calculate_route_length(r);
         wolf.setFitness(fitness);
     }
 
     void initialize_population() {
-        std::vector<Wolf> full_pack;
+        population.clear();
+        population.reserve(static_cast<std::size_t>(populationSize));
         for (int i = 0; i < populationSize; ++i) {
-            full_pack.emplace_back(numCities);
-            update_wolf_fitness(full_pack.back());
+            population.emplace_back(numCities);
+            update_wolf_fitness(population.back());
         }
-        std::sort(full_pack.begin(), full_pack.end());
-        alfa = full_pack[0];
-        beta = full_pack[1];
-        delta = full_pack[2];
-        bestLength = alfa.getFitness();
-        omega.clear();
-        for (int i = 3; i < populationSize; ++i) {
-            omega.push_back(full_pack[i]);
-        }
+        alpha_wolf = population[0];
+        beta_wolf = population[1];
+        delta_wolf = population[2];
+        update_leaders();
+        bestLength = alpha_wolf.getFitness();
+        tmp_route.assign(static_cast<std::size_t>(numCities), 0);
     }
 
-    bool is_valid_permutation(const std::vector<int>& route) {
-        if ((int)route.size() != numCities) return false;
-        std::vector<int> cnt(numCities, 0);
-        for (int v : route) {
-            if (v < 0 || v >= numCities) return false;
-            cnt[v]++;
-            if (cnt[v] > 1) return false;
-        }
-        return true;
-    }
-
-    std::vector<int> repair_permutation(const std::vector<int>& route) {
-        std::vector<int> res = route;
-        std::vector<int> cnt(numCities, 0);
-        for (int& v : res) {
-            if (v < 0 || v >= numCities) v = -1;
-            else cnt[v]++;
-        }
-        std::vector<int> missing;
-        for (int i = 0; i < numCities; ++i) if (cnt[i] == 0) missing.push_back(i);
-        int m = 0;
-        std::vector<int> seen(numCities, 0);
-        for (int& v : res) {
-            if (v == -1) {
-                v = missing[m++];
-            } else {
-                if (seen[v] == 1) {
-                    v = missing[m++];
-                } else {
-                    seen[v] = 1;
-                }
-            }
-        }
-        return res;
-    }
-
-    std::vector<int> move_towards(const std::vector<int>& current_route,
-                                  const std::vector<int>& target_route) {
+    void move_towards(const std::vector<int>& current_route, const std::vector<int>& target_route, std::vector<int>& child) {
         int n = numCities;
-        std::vector<int> child(n, -1);
+        timestamp++;
+        for (int i = 0; i < n; i++) {
+            child[static_cast<std::size_t>(i)] = -1;
+        }
         int start = city_dist(rand_gen);
         int end = city_dist(rand_gen);
-        if (start > end) std::swap(start, end);
-        for (int i = start; i <= end; ++i) child[i] = target_route[i];
-        int pos = (end + 1) % n;
-        for (int i = 0; i < n; ++i) {
-            int city = current_route[(end + 1 + i) % n];
-            if (std::find(child.begin(), child.end(), city) == child.end()) {
-                child[pos] = city;
-                pos = (pos + 1) % n;
+        if (start > end) {
+            int tmp = start;
+            start = end;
+            end = tmp;
+        }
+        for (int i = start; i <= end; i++) {
+            std::size_t idx = static_cast<std::size_t>(i);
+            int c = target_route[idx];
+            child[idx] = c;
+            visited[static_cast<std::size_t>(c)] = timestamp;
+        }
+        int scan_pos = end + 1;
+        if (scan_pos >= n) {
+            scan_pos = 0;
+        }
+        int ins_pos = end + 1;
+        if (ins_pos >= n) {
+            ins_pos = 0;
+        }
+        for (int k = 0; k < n; k++) {
+            std::size_t scan_idx = static_cast<std::size_t>(scan_pos);
+            int c = current_route[scan_idx];
+            std::size_t c_idx = static_cast<std::size_t>(c);
+            if (visited[c_idx] != timestamp) {
+                std::size_t ins_idx = static_cast<std::size_t>(ins_pos);
+                child[ins_idx] = c;
+                visited[c_idx] = timestamp;
+                ins_pos++;
+                if (ins_pos == n) {
+                    ins_pos = 0;
+                }
+            }
+            scan_pos++;
+            if (scan_pos == n) {
+                scan_pos = 0;
             }
         }
-        if (!is_valid_permutation(child)) child = repair_permutation(child);
-        return child;
-    }
-
-    std::vector<int> swap_mutation(const std::vector<int>& route) {
-        std::vector<int> r = route;
-        int i = city_dist(rand_gen);
-        int j = city_dist(rand_gen);
-        while (i == j) j = city_dist(rand_gen);
-        std::swap(r[i], r[j]);
-        return r;
     }
 
     void update_omega_wolf(Wolf& wolf, double a) {
-        std::vector<int> new_route;
-        double A1 = a * (2.0 * unif_dist(rand_gen) - 1.0);
-        double r = unif_dist(rand_gen);
-        if (r < 0.33) new_route = move_towards(wolf.getRoute(), alfa.getRoute());
-        else if (r < 0.66) new_route = move_towards(wolf.getRoute(), beta.getRoute());
-        else new_route = move_towards(wolf.getRoute(), delta.getRoute());
-        if (std::abs(A1) > 1.0) new_route = swap_mutation(new_route);
-        if (!is_valid_permutation(new_route)) new_route = repair_permutation(new_route);
-        double new_fitness = calculate_route_length(new_route);
-        if (new_fitness < wolf.getFitness()) {
-            wolf.setRoute(new_route);
+        const std::vector<int>& current_route = wolf.getRoute();
+        if (tmp_route.size() != static_cast<std::size_t>(numCities)) {
+            tmp_route.resize(static_cast<std::size_t>(numCities));
+        }
+        double old_fitness = wolf.getFitness();
+        double new_fitness = old_fitness;
+        double p_explore = 0.5 * a;
+        if (p_explore < 0.0) {
+            p_explore = 0.0;
+        } else if (p_explore > 1.0) {
+            p_explore = 1.0;
+        }
+        double r_mode = unif_dist(rand_gen);
+        if (r_mode < p_explore) {
+            int i = city_dist(rand_gen);
+            int j = city_dist(rand_gen);
+            while (i == j) {
+                j = city_dist(rand_gen);
+            }
+            if (i > j) {
+                int tmp = i;
+                i = j;
+                j = tmp;
+            }
+            int city_A_idx = (i - 1 + numCities) % numCities;
+            int city_B_idx = i;
+            int city_C_idx = j;
+            int city_D_idx = (j + 1) % numCities;
+
+            std::size_t idx_A = static_cast<std::size_t>(current_route[static_cast<std::size_t>(city_A_idx)]);
+            std::size_t idx_B = static_cast<std::size_t>(current_route[static_cast<std::size_t>(city_B_idx)]);
+            std::size_t idx_C = static_cast<std::size_t>(current_route[static_cast<std::size_t>(city_C_idx)]);
+            std::size_t idx_D = static_cast<std::size_t>(current_route[static_cast<std::size_t>(city_D_idx)]);
+
+            std::size_t cities_count = static_cast<std::size_t>(numCities);
+
+            double old_edges_cost = distance_matrix[idx_A * cities_count + idx_B] +
+                                    distance_matrix[idx_C * cities_count + idx_D];
+            double new_edges_cost = distance_matrix[idx_A * cities_count + idx_C] +
+                                    distance_matrix[idx_B * cities_count + idx_D];
+            double delta = new_edges_cost - old_edges_cost;
+            new_fitness = old_fitness + delta;
+
+            std::copy(current_route.begin(), current_route.end(), tmp_route.begin());
+            std::reverse(tmp_route.begin() + static_cast<std::ptrdiff_t>(i),
+                         tmp_route.begin() + static_cast<std::ptrdiff_t>(j) + static_cast<std::ptrdiff_t>(1));
+        } else {
+            double r = unif_dist(rand_gen);
+            if (r < EXPLOIT_BOUND_1) {
+                move_towards(current_route, alpha_wolf.getRoute(), tmp_route);
+            } else if (r < EXPLOIT_BOUND_2) {
+                move_towards(current_route, beta_wolf.getRoute(), tmp_route);
+            } else {
+                move_towards(current_route, delta_wolf.getRoute(), tmp_route);
+            }
+            new_fitness = calculate_route_length(tmp_route);
+        }
+        if (new_fitness < old_fitness) {
+            wolf.setRoute(tmp_route);
             wolf.setFitness(new_fitness);
         }
     }
 
     void update_leaders() {
-        std::vector<Wolf> full_pack = omega;
-        full_pack.push_back(alfa);
-        full_pack.push_back(beta);
-        full_pack.push_back(delta);
-        std::sort(full_pack.begin(), full_pack.end());
-        alfa = full_pack[0];
-        beta = full_pack[1];
-        delta = full_pack[2];
-        omega.clear();
-        for (size_t i = 3; i < full_pack.size(); ++i) {
-            omega.push_back(full_pack[i]);
-        }
-    }
-
-    // -----------------------------------------------------------------
-    // 💎 NOWA FUNKCJA: LOKALNY OPTYMALIZATOR 2-OPT 💎
-    // -----------------------------------------------------------------
-    /**
-     * @brief Stosuje algorytm 2-opt do danej trasy, aby usunąć skrzyżowania.
-     * Modyfikuje trasę w miejscu (przez referencję) i zwraca nowy, ulepszony koszt.
-     */
-    double apply_2_opt(std::vector<int>& route) {
-        bool improvement = true;
-        double best_fitness = calculate_route_length(route);
-
-        while (improvement) {
-            improvement = false;
-            for (int i = 0; i < numCities - 1; ++i) {
-                for (int k = i + 1; k < numCities; ++k) {
-                    // Rozważamy zamianę krawędzi (i, i+1) oraz (k, k+1)
-                    // na (i, k) oraz (i+1, k+1)
-                    // (z obsługą zawijania dla krawędzi (k, k+1))
-
-                    // Krawędź 1: (a) -> (b)
-                    int a = route[i];
-                    int b = route[i + 1]; // Dla i=n-1 to nie będzie używane
-
-                    // Krawędź 2: (c) -> (d)
-                    int c = route[k];
-                    int d = route[(k + 1) % numCities]; // Obsługa zawijania z końca do początku
-
-                    // Koszt przed zamianą: dist(a,b) + dist(c,d)
-                    double current_cost = distance_matrix[a][b] + distance_matrix[c][d];
-                    // Koszt po zamianie: dist(a,c) + dist(b,d)
-                    double new_cost = distance_matrix[a][c] + distance_matrix[b][d];
-
-                    // Używamy małej tolerancji, aby uniknąć problemów z precyzją
-                    if (new_cost < current_cost - 1e-9) {
-                        // Znaleziono poprawę.
-                        // Odwracamy segment trasy od [i+1] do [k]
-                        std::reverse(route.begin() + i + 1, route.begin() + k + 1);
-                        
-                        best_fitness = calculate_route_length(route); // Oblicz nowy fitness
-                        improvement = true;
-                        
-                        // Strategia "First Improvement": przerywamy pętle i zaczynamy od nowa
-                        goto restart_2_opt_loops;
-                    }
-                }
+        for (int i = 0; i < populationSize; i++) {
+            Wolf& w = population[static_cast<std::size_t>(i)];
+            double f = w.getFitness();
+            if (f < alpha_wolf.getFitness()) {
+                delta_wolf = beta_wolf;
+                beta_wolf = alpha_wolf;
+                alpha_wolf = w;
+            } else if (f < beta_wolf.getFitness()) {
+                delta_wolf = beta_wolf;
+                beta_wolf = w;
+            } else if (f < delta_wolf.getFitness()) {
+                delta_wolf = w;
             }
-        restart_2_opt_loops:; // Etykieta dla "goto"
         }
-        return best_fitness;
     }
-
 
 public:
-    // -----------------------------------------------------------------
-    // 🛠️ MODYFIKACJA KONSTRUKTORA 🛠️
-    // -----------------------------------------------------------------
     TSP(int n, int popSize = 50, int iterations = 1000)
         : numCities(n),
+          timestamp(0),
           populationSize(popSize),
           maxIterations(iterations),
           bestLength(std::numeric_limits<double>::max()),
           rand_gen(std::random_device{}()),
           unif_dist(0.0, 1.0),
-          city_dist(0, n - 1)
-    {
+          city_dist(0, n - 1),
+          coord_dist(0, MAX_COORD_DIST) {
         if (n <= 0) {
             std::cout << "ERROR::TSP::TSP n <= 0\n";
             return;
@@ -259,61 +252,41 @@ public:
             std::cout << "ERROR::TSP::TSP populacja musi byc > 3\n";
             populationSize = 4;
         }
-        this->generate_random_cities(n);
-        this->build_distance_matrix();
-        this->initialize_population();
-        
-        // !!! USUNIĘTO: bestRoute = this->solve(); !!!
-        // Konstruktor nie powinien uruchamiać algorytmu.
-        // Należy to zrobić ręcznie po utworzeniu obiektu.
+        visited.assign(static_cast<std::size_t>(n), -1);
+        distance_matrix.resize(static_cast<std::size_t>(numCities) * static_cast<std::size_t>(numCities));
+        generate_random_cities(n);
+        build_distance_matrix();
+        initialize_population();
     }
 
-    // -----------------------------------------------------------------
-    // 🚀 MODYFIKACJA METODY SOLVE 🚀
-    // -----------------------------------------------------------------
     std::vector<Point> solve() {
         std::cout << "Rozpoczynanie algorytmu GWO..." << std::endl;
         for (int t = 0; t < maxIterations; ++t) {
-            double progress = static_cast<double>(t) / maxIterations;
+            double progress = static_cast<double>(t) / static_cast<double>(maxIterations);
             double a = 2.0 * std::pow(1.0 - progress, 2.0);
-            for (Wolf& wolf : omega) {
-                update_omega_wolf(wolf, a);
+            for (int i = 3; i < populationSize; i++) {
+                update_omega_wolf(population[static_cast<std::size_t>(i)], a);
             }
             update_leaders();
-            if (alfa.getFitness() < bestLength) {
-                bestLength = alfa.getFitness();
-                std::cout << "Iteracja " << t << ": Nowa najlepsza trasa (GWO) = " << bestLength << std::endl;
+            if (alpha_wolf.getFitness() < bestLength) {
+                bestLength = alpha_wolf.getFitness();
             }
         }
         std::cout << "GWO zakonczone. Najlepsza znaleziona dlugosc: " << bestLength << std::endl;
-
-        // --- SEKCJA HYBRYDOWA: 2-OPT ---
-        std::cout << "Uruchamianie lokalnej optymalizacji 2-opt..." << std::endl;
-        std::vector<int> bestRouteIndices = alfa.getRoute();
-        double finalLength = apply_2_opt(bestRouteIndices);
-
-        if (finalLength < bestLength) {
-            std::cout << "2-opt znalazl lepsze rozwiazanie! Ostateczna dlugosc: " << finalLength << std::endl;
-            bestLength = finalLength;
-            alfa.setRoute(bestRouteIndices);
-            alfa.setFitness(finalLength);
-        } else {
-            std::cout << "2-opt nie znalazl poprawy. Wynik GWO jest ostateczny." << std::endl;
-        }
-        // --- Koniec sekcji 2-opt ---
-
-
         std::vector<Point> bestRoutePoints;
-        for (int city_index : alfa.getRoute()) { // Używamy zaktualizowanej trasy alfa
-            bestRoutePoints.push_back(cities[city_index]);
+        const std::vector<int>& bestRouteIdx = alpha_wolf.getRoute();
+        bestRoutePoints.reserve(bestRouteIdx.size());
+        for (std::size_t k = 0U; k < bestRouteIdx.size(); ++k) {
+            int city_index = bestRouteIdx[k];
+            bestRoutePoints.push_back(cities[static_cast<std::size_t>(city_index)]);
         }
-        bestRoute = bestRoutePoints; // Zapisujemy ostateczną trasę
+        bestRoute = bestRoutePoints;
         return bestRoutePoints;
     }
 
     void print_solution() {
-        std::cout << "Najlepsza znaleziona trasa (Dlugosc: " << bestLength << "):" << std::endl;
-        alfa.printRoute();
+        std::cout << "Najlepsza znaleziona trasa (Dlugosc: " << std::sqrt(bestLength) << "):" << std::endl;
+        alpha_wolf.printRoute();
     }
 
     std::vector<Point> get_best_route() const {
