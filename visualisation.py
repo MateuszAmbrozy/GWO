@@ -31,4 +31,4 @@ for i, (x, y) in enumerate(points):
 
 plt.grid(True)
 plt.tight_layout()
-plt.show()
+plt.savefig("wykres.png")
