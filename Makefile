@@ -1,12 +1,16 @@
-NAME = tsp_solver
-
-SRC = main.cpp
-
-OBJ = $(SRC:.cpp=.o)
-
+CXX = g++
+CXXFLAGS = -std=c++17 -O3 -g -pg -fno-omit-frame-pointer -pthread -march=native
 INCLUDES = -Iincludes
 
-FLAGS = -O3 -pg -g -fno-omit-frame-pointer -std=c++17
+SRC = main.cpp
+OBJ = $(SRC:.cpp=.o)
+NAME = tsp_solver
 
-default:
-	g++ $(CXXFLAGS) $(INCLUDES) $(SRC) $(FLAGS) -o $(NAME)
+$(NAME): $(OBJ)
+	$(CXX) $(CXXFLAGS) $(OBJ) -o $(NAME)
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+clean:
+	rm -f $(OBJ) $(NAME)
